@@ -12,4 +12,8 @@ dioxus-fullstack = "0.7.2"
 markdown = "1.0.0"
 serde = "1.0.228"
 tokio = { version = "1.48.0", features = ["rt-multi-thread", "macros"] }
-turso = "0.3.2"
+tower-http = {version = "0.6.2", features = ["fs"]}
+libsql = "0.9.29"
+bcrypt = "0.17.1"
+tracing = "0.1.44"
+tracing-subscriber = "0.3.22"

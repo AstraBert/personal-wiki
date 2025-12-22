@@ -1,9 +1,12 @@
-use turso::Builder;
+use libsql::{Builder, params};
 use markdown::{to_html};
+use bcrypt::{hash, verify, DEFAULT_COST};
 use serde::{Deserialize, Serialize};
 use axum::{Router, routing::{get, post},extract::Path, response::{Json,Html}};
+use tower_http::services::{ServeDir, ServeFile};
+use tracing::{error, info, instrument};
 
-const CSS_STYLE: &str = "<style>
+const CSS_STYLE: &str = r#"<style>
   * {
     margin: 0;
     padding: 0;
@@ -11,17 +14,11 @@ const CSS_STYLE: &str = "<style>
   }
 
   body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, 'Apple Color Emoji', Arial, sans-serif, 'Segoe UI Emoji', 'Segoe UI Symbol';
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
     font-size: 16px;
     line-height: 1.6;
     color: #37352f;
     background: #ffffff;
-    padding: 0;
-    margin: 0;
-  }
-
-  /* Main content container */
-  body > * {
     max-width: 720px;
     margin: 0 auto;
     padding: 40px 96px;
@@ -32,7 +29,7 @@ const CSS_STYLE: &str = "<style>
     font-size: 2.5em;
     font-weight: 700;
     line-height: 1.2;
-    margin: 2px 0 8px;
+    margin: 0 0 16px 0;
     color: #37352f;
   }
 
@@ -40,7 +37,7 @@ const CSS_STYLE: &str = "<style>
     font-size: 1.875em;
     font-weight: 600;
     line-height: 1.3;
-    margin: 1.4em 0 4px;
+    margin: 1.4em 0 8px 0;
     color: #37352f;
   }
 
@@ -48,51 +45,37 @@ const CSS_STYLE: &str = "<style>
     font-size: 1.5em;
     font-weight: 600;
     line-height: 1.3;
-    margin: 1em 0 4px;
-    color: #37352f;
-  }
-
-  h4, h5, h6 {
-    font-size: 1.25em;
-    font-weight: 600;
-    line-height: 1.4;
-    margin: 1em 0 4px;
+    margin: 1em 0 8px 0;
     color: #37352f;
   }
 
   /* Paragraphs */
   p {
-    margin: 4px 0;
-    padding: 3px 2px;
-    white-space: pre-wrap;
+    margin: 0 0 12px 0;
+    line-height: 1.6;
   }
 
   /* Links */
   a {
-    color: inherit;
-    text-decoration: underline;
-    text-decoration-color: rgba(55, 53, 47, 0.4);
-    text-underline-offset: 2px;
-    transition: text-decoration-color 0.2s ease;
+    color: #0066cc;
+    text-decoration: none;
+    border-bottom: 1px solid rgba(0, 102, 204, 0.3);
+    transition: border-color 0.2s ease;
   }
 
   a:hover {
-    text-decoration-color: rgba(55, 53, 47, 0.8);
+    border-bottom-color: #0066cc;
   }
 
   /* Lists */
   ul, ol {
-    margin: 4px 0;
+    margin: 0 0 12px 0;
     padding-left: 1.5em;
   }
 
   li {
-    margin: 2px 0;
-    padding: 3px 2px;
-  }
-
-  li::marker {
-    color: rgba(55, 53, 47, 0.6);
+    margin: 4px 0;
+    line-height: 1.6;
   }
 
   /* Code */
@@ -101,8 +84,8 @@ const CSS_STYLE: &str = "<style>
     color: #eb5757;
     padding: 0.2em 0.4em;
     border-radius: 3px;
-    font-size: 0.85em;
-    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace;
+    font-size: 0.9em;
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
   }
 
   pre {
@@ -110,93 +93,86 @@ const CSS_STYLE: &str = "<style>
     padding: 16px;
     border-radius: 3px;
     overflow-x: auto;
-    margin: 8px 0;
+    margin: 0 0 12px 0;
   }
 
   pre code {
     background: none;
     color: #37352f;
     padding: 0;
-    font-size: 0.875em;
-  }
-
-  /* Blockquotes */
-  blockquote {
-    border-left: 3px solid #37352f;
-    padding-left: 16px;
-    margin: 8px 0;
-    color: #37352f;
-  }
-
-  /* Horizontal rule */
-  hr {
-    border: none;
-    border-top: 1px solid rgba(55, 53, 47, 0.16);
-    margin: 16px 0;
-  }
-
-  /* Images */
-  img {
-    max-width: 100%;
-    height: auto;
-    border-radius: 3px;
-    margin: 8px 0;
-  }
-
-  /* Tables */
-  table {
-    border-collapse: collapse;
-    width: 100%;
-    margin: 8px 0;
-  }
-
-  th, td {
-    border: 1px solid rgba(55, 53, 47, 0.16);
-    padding: 8px 12px;
-    text-align: left;
-  }
-
-  th {
-    background: rgba(242, 241, 238, 0.6);
-    font-weight: 600;
   }
 
   /* Mobile responsiveness */
   @media (max-width: 768px) {
-    body > * {
-      padding: 40px 24px;
+    body {
+      padding: 24px;
     }
   }
-</style>";
+</style>"#;
+
+fn style_html(html: &str, username: &str) -> String {
+    format!(
+        "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"UTF-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n<title>{}'s Wiki</title>\n{}\n</head>\n<body>\n{}\n</body>\n</html>",
+        username, CSS_STYLE, html
+    )
+}
+
+fn hash_pwd(password: &str) -> Result<String, bcrypt::BcryptError> {
+  hash(password, DEFAULT_COST)
+}
+
+fn verify_hashed_pwd(password: &str, hashed_password: &str) -> Result<bool, bcrypt::BcryptError> {
+  verify(password, hashed_password)
+}
+
+struct Wiki {
+  content: String,
+  password: String,
+}
+
+impl Wiki {
+  fn new(content: String, password: String) -> Self {
+    Self {
+      content: content,
+      password: password,
+    }
+  }
+}
 
 async fn create_table() {
-    let db = Builder::new_local("wikis.db").build().await.expect("It should be possible to create a local database");
+    let url = std::env::var("LIBSQL_CONNECTION_STRING").expect("LIBSQL_CONNECTION_STRING should be set");
+    let token = std::env::var("LIBSQL_AUTH_TOKEN").expect("LIBSQL_AUTH_TOKEN should be set");
+    let db = Builder::new_remote(url, token).build().await.expect("It should be possible to connect to remote database");
     let conn = db.connect().expect("It should be possible to connect to a local database");
 
     // Create a table
     conn.execute(
-        "CREATE TABLE IF NOT EXISTS wikis (id INTEGER PRIMARY KEY, user TEXT, content TEXT)",
+        "CREATE TABLE IF NOT EXISTS wikis (id INTEGER PRIMARY KEY, user TEXT, content TEXT, password TEXT)",
         ()
     ).await.expect("It should be possible to create a table within the database");
 }
 
-async fn get_record(username: &str) -> Option<String> {
-    create_table().await;
-    let db = Builder::new_local("wikis.db").build().await.ok()?;
+async fn get_record(username: &str) -> Option<Wiki> {
+    let url = std::env::var("LIBSQL_CONNECTION_STRING").expect("LIBSQL_CONNECTION_STRING should be set");
+    let token = std::env::var("LIBSQL_AUTH_TOKEN").expect("LIBSQL_AUTH_TOKEN should be set");
+    let db = Builder::new_remote(url, token).build().await.ok()?;
     let conn = db.connect().ok()?;
 
-    let mut rows = conn.query("SELECT content FROM wikis WHERE user = ?", (username,)).await.ok()?;
+    let mut rows = conn.query("SELECT content, password FROM wikis WHERE user = ?", params![username]).await.ok()?;
 
     if let Some(row) = rows.next().await.ok()? {
         let content: String = row.get(0).ok()?;
-        return Some(content);
+        let pwd: String = row.get(1).ok()?;
+        return Some(Wiki::new(content, pwd));
     }
     
     None
 }
-async fn insert_record(markdown_text: &str, username: &str) -> Option<String> {
+async fn insert_record(markdown_text: &str, username: &str, password: &str) -> Option<String> {
     create_table().await;
-    let db = Builder::new_local("wikis.db").build().await.ok()?;
+    let url = std::env::var("LIBSQL_CONNECTION_STRING").expect("LIBSQL_CONNECTION_STRING should be set");
+    let token = std::env::var("LIBSQL_AUTH_TOKEN").expect("LIBSQL_AUTH_TOKEN should be set");
+    let db = Builder::new_remote(url, token).build().await.ok()?;
     let conn = db.connect().ok()?;
     let html_text = to_html(markdown_text);
     if html_text != markdown_text { // conversion happened correctly
@@ -207,8 +183,8 @@ async fn insert_record(markdown_text: &str, username: &str) -> Option<String> {
             }
             None => {
                 conn.execute(
-                    "INSERT INTO wikis (user, content) VALUES (?1, ?2)", 
-                    [username, markdown_text]
+                    "INSERT INTO wikis (user, content, password) VALUES (?1, ?2, ?3)", 
+                    [username, &html_text, password]
                 ).await.ok()?;
                 return None
             }
@@ -216,20 +192,34 @@ async fn insert_record(markdown_text: &str, username: &str) -> Option<String> {
     }
     Some("Could not convert markdown text to HTML".to_string())
 }
-async fn update_record(markdown_text: &str, username: &str) -> Option<String> {
+async fn update_record(markdown_text: &str, username: &str, password: &str) -> Option<String> {
     create_table().await;
-    let db = Builder::new_local("wikis.db").build().await.ok()?;
+    let url = std::env::var("LIBSQL_CONNECTION_STRING").expect("LIBSQL_CONNECTION_STRING should be set");
+    let token = std::env::var("LIBSQL_AUTH_TOKEN").expect("LIBSQL_AUTH_TOKEN should be set");
+    let db = Builder::new_remote(url, token).build().await.ok()?;
     let conn = db.connect().ok()?;
     let html_text = to_html(markdown_text);
     if html_text != markdown_text { // conversion happened correctly
         let user_exists = get_record(username).await;
         match user_exists {
-            Some(_) => {
-                conn.execute(
-                    "UPDATE wikis SET content = ?1 WHERE user = ?2", 
-                    [markdown_text, username]
-                ).await.ok()?;
-                return None
+            Some(r) => {
+                let verification = verify_hashed_pwd(password, &r.password);
+                match verification {
+                    Ok(pwd_match) => {
+                      if pwd_match {
+                        conn.execute(
+                            "UPDATE wikis SET content = ?1 WHERE user = ?2", 
+                            [&html_text, username]
+                        ).await.ok()?;
+                        return None
+                      } else {
+                        return Some("Wrong username or password".to_string());
+                      }
+                    } 
+                    Err(e) => {
+                      return Some(e.to_string());
+                    }
+                }
             }
             None => {
                 return Some("User does not exists".to_string())
@@ -239,13 +229,44 @@ async fn update_record(markdown_text: &str, username: &str) -> Option<String> {
     Some("Could not convert markdown text to HTML".to_string())
 }
 
-#[derive(Deserialize)]
-struct CreateOrUpdateWikiRequest {
-    content: String,
-    username: String
+async fn delete_record(username: &str, password: &str) -> Option<String> {
+  create_table().await;
+  let url = std::env::var("LIBSQL_CONNECTION_STRING").expect("LIBSQL_CONNECTION_STRING should be set");
+  let token = std::env::var("LIBSQL_AUTH_TOKEN").expect("LIBSQL_AUTH_TOKEN should be set");
+  let db = Builder::new_remote(url, token).build().await.ok()?;
+  let conn = db.connect().ok()?;
+  let user_exists = get_record(username).await;
+  match user_exists {
+    Some(r) => {
+      let verification = verify_hashed_pwd(password, &r.password);
+      match verification {
+        Ok(pwd_match) => {
+          if pwd_match {
+            conn.execute("DELETE FROM wikis WHERE user = ?", params![username]).await.ok()?;
+          } else {
+            return Some("Wrong username or password".to_string())
+          }
+        }
+        Err(e) => {
+          return Some(e.to_string())
+        }
+      }
+    }
+    None => {
+      return Some("User does not exist".to_string())
+    }
+  }
+  None
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Debug)]
+struct CreateOrUpdateWikiRequest {
+    content: String,
+    username: String,
+    password: String,
+}
+
+#[derive(Serialize, Debug)]
 struct CreateOrUpdateWikiResponse {
     success: bool,
     error: Option<String>,
@@ -262,44 +283,89 @@ impl CreateOrUpdateWikiResponse {
   }
 }
 
+#[derive(Deserialize, Debug)]
+struct DeleteWikiRequest {
+  username: String,
+  password: String,
+}
 
+#[derive(Serialize, Debug)]
+struct DeleteWikiResponse {
+  success: bool,
+  error: Option<String>,
+}
+
+#[instrument]
 async fn create_wiki(Json(payload): Json<CreateOrUpdateWikiRequest>) -> Json<CreateOrUpdateWikiResponse> {
-    if let Some(error_msg) = insert_record(&payload.content, &payload.username).await {
+    let hashed_psw = hash_pwd(&payload.password);
+    let password: String;
+    match hashed_psw {
+        Ok(s) => {
+          password = s;
+        }
+        Err(e) => {
+          error!(event = "CreateWiki", data_id = %payload.username, "{}", e.to_string());
+          return Json(CreateOrUpdateWikiResponse::new(false, Some(e.to_string()), None))
+        }
+    }
+    if let Some(error_msg) = insert_record(&payload.content, &payload.username, &password).await {
+        error!(event = "CreateWiki", data_id = %payload.username, "{}", error_msg);
         return Json(CreateOrUpdateWikiResponse::new(false, Some(error_msg), None))
     }
+    info!(event = "CreateWiki", data_id = %payload.username, "Wiki successfully created");
     Json(CreateOrUpdateWikiResponse::new(true, None, Some(format!("/wikis/{}", &payload.username))))
 }
 
+#[instrument]
 async fn update_wiki(Json(payload): Json<CreateOrUpdateWikiRequest>) -> Json<CreateOrUpdateWikiResponse> {
-    if let Some(error_msg) = update_record(&payload.content, &payload.username).await {
+    if let Some(error_msg) = update_record(&payload.content, &payload.username, &payload.password).await {
+        error!(event = "UpdateWiki", data_id = %payload.username, "{}", error_msg);
         return Json(CreateOrUpdateWikiResponse::new(false, Some(error_msg), None))
     }
+    info!(event = "UpdateWiki", data_id = %payload.username, "Wiki successfully updated");
     Json(CreateOrUpdateWikiResponse::new(true, None, Some(format!("/wikis/{}", &payload.username))))
 }
 
-fn style_html(html: &str, username: &str) -> String {
-    format!("<html>\n<head>\n<title>{}'s Wiki</title>\n{}\n</head>\n<body>\n{}\n</body>\n</html>", username, CSS_STYLE, html)
-}
-
+#[instrument]
 async fn get_wiki(Path(username): Path<String>) -> Html<String> {
     match get_record(&username).await {
         Some(content) => {
-            let styled_content = style_html(&content, &username);
+            let styled_content = style_html(&content.content, &username);
+            info!(event = "GetWiki", data_id = %username, "Wiki successfully retrieved");
             return Html(styled_content)
         }
         ,
         None => {
+          error!(event = "GetWiki", data_id = %username, "Wiki not found for user {}", username);
           return Html(format!("Wiki for user {} not found... Please create one and try again!", &username))
         }
     }
 }
 
+#[instrument]
+async fn delete_wiki(Json(payload): Json<DeleteWikiRequest>) -> Json<DeleteWikiResponse> {
+  match delete_record(&payload.username, &payload.password).await {
+      Some(s) => {
+        error!(event = "DeleteWiki", data_id = %payload.username, "{}", s);
+        return Json(DeleteWikiResponse { success: false, error: Some(s) })
+      }
+      None => {
+        info!(event = "DeleteWiki", data_id = %payload.username, "Wiki successfully deleted");
+        return Json(DeleteWikiResponse { success: true, error: None })
+      }
+  }
+}
+
 #[tokio::main]
 async fn main() {
+  tracing_subscriber::fmt().pretty().init();
+  let index_html = ServeFile::new("./pages/index.html");
+  let scripts = ServeDir::new("./scripts/");
   let app = Router::new()
-    .route("/", get(|| async { "Hello, World!" }))
-    .route("/wikis", post(create_wiki).patch(update_wiki))
-    .route("/wikis/{username}", get(get_wiki));
+    .route("/wikis", post(create_wiki).patch(update_wiki).delete(delete_wiki))
+    .route("/wikis/{username}", get(get_wiki))
+    .nest_service("/scripts", scripts)
+    .route_service("/", index_html);
   let address = "0.0.0.0:3000";
   let listener = tokio::net::TcpListener::bind(address).await.unwrap();
   println!("Starting to serving application on {}", address);
