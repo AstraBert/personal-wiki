@@ -4,6 +4,7 @@ use bcrypt::{hash, verify, DEFAULT_COST};
 use serde::{Deserialize, Serialize};
 use axum::{Router, routing::{get, post},extract::Path, response::{Json,Html}};
 use tower_http::services::{ServeDir, ServeFile};
+use tracing::{error, info, instrument};
 
 const CSS_STYLE: &str = r#"<style>
   * {
@@ -258,14 +259,14 @@ async fn delete_record(username: &str, password: &str) -> Option<String> {
   None
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 struct CreateOrUpdateWikiRequest {
     content: String,
     username: String,
     password: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 struct CreateOrUpdateWikiResponse {
     success: bool,
     error: Option<String>,
@@ -282,18 +283,19 @@ impl CreateOrUpdateWikiResponse {
   }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 struct DeleteWikiRequest {
   username: String,
   password: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 struct DeleteWikiResponse {
   success: bool,
   error: Option<String>,
 }
 
+#[instrument]
 async fn create_wiki(Json(payload): Json<CreateOrUpdateWikiRequest>) -> Json<CreateOrUpdateWikiResponse> {
     let hashed_psw = hash_pwd(&payload.password);
     let password: String;
@@ -302,51 +304,53 @@ async fn create_wiki(Json(payload): Json<CreateOrUpdateWikiRequest>) -> Json<Cre
           password = s;
         }
         Err(e) => {
+          error!(event = "CreateWiki", data_id = %payload.username, "{}", e.to_string());
           return Json(CreateOrUpdateWikiResponse::new(false, Some(e.to_string()), None))
         }
     }
     if let Some(error_msg) = insert_record(&payload.content, &payload.username, &password).await {
+        error!(event = "CreateWiki", data_id = %payload.username, "{}", error_msg);
         return Json(CreateOrUpdateWikiResponse::new(false, Some(error_msg), None))
     }
+    info!(event = "CreateWiki", data_id = %payload.username, "Wiki successfully created");
     Json(CreateOrUpdateWikiResponse::new(true, None, Some(format!("/wikis/{}", &payload.username))))
 }
 
+#[instrument]
 async fn update_wiki(Json(payload): Json<CreateOrUpdateWikiRequest>) -> Json<CreateOrUpdateWikiResponse> {
-    let hashed_psw = hash_pwd(&payload.password);
-    let password: String;
-    match hashed_psw {
-        Ok(s) => {
-          password = s;
-        }
-        Err(e) => {
-          return Json(CreateOrUpdateWikiResponse::new(false, Some(e.to_string()), None))
-        }
-    }
-    if let Some(error_msg) = update_record(&payload.content, &payload.username, &password).await {
+    if let Some(error_msg) = update_record(&payload.content, &payload.username, &payload.password).await {
+        error!(event = "UpdateWiki", data_id = %payload.username, "{}", error_msg);
         return Json(CreateOrUpdateWikiResponse::new(false, Some(error_msg), None))
     }
+    info!(event = "UpdateWiki", data_id = %payload.username, "Wiki successfully updated");
     Json(CreateOrUpdateWikiResponse::new(true, None, Some(format!("/wikis/{}", &payload.username))))
 }
 
+#[instrument]
 async fn get_wiki(Path(username): Path<String>) -> Html<String> {
     match get_record(&username).await {
         Some(content) => {
             let styled_content = style_html(&content.content, &username);
+            info!(event = "GetWiki", data_id = %username, "Wiki successfully retrieved");
             return Html(styled_content)
         }
         ,
         None => {
+          error!(event = "GetWiki", data_id = %username, "Wiki not found for user {}", username);
           return Html(format!("Wiki for user {} not found... Please create one and try again!", &username))
         }
     }
 }
 
+#[instrument]
 async fn delete_wiki(Json(payload): Json<DeleteWikiRequest>) -> Json<DeleteWikiResponse> {
   match delete_record(&payload.username, &payload.password).await {
       Some(s) => {
+        error!(event = "DeleteWiki", data_id = %payload.username, "{}", s);
         return Json(DeleteWikiResponse { success: false, error: Some(s) })
       }
       None => {
+        info!(event = "DeleteWiki", data_id = %payload.username, "Wiki successfully deleted");
         return Json(DeleteWikiResponse { success: true, error: None })
       }
   }
@@ -354,6 +358,7 @@ async fn delete_wiki(Json(payload): Json<DeleteWikiRequest>) -> Json<DeleteWikiR
 
 #[tokio::main]
 async fn main() {
+  tracing_subscriber::fmt().pretty().init();
   let index_html = ServeFile::new("./pages/index.html");
   let scripts = ServeDir::new("./scripts/");
   let app = Router::new()

@@ -115,7 +115,7 @@ document.getElementById('deleteWiki').addEventListener('click', async () => {
         if (response.ok) {
             const jsonResponse = await response.json()
             // validate
-            if ("success" in jsonResponse && "error" in jsonResponse && "url" in jsonResponse) {
+            if ("success" in jsonResponse && "error" in jsonResponse) {
                 if (jsonResponse.success) {
                     btn.textContent = "Deleted Wiki!";
                     setTimeout(() => {
