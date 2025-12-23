@@ -5,9 +5,10 @@ use serde::{Deserialize, Serialize};
 use axum::{Router, routing::{get, post},extract::Path, response::{Json,Html}};
 use tower_http::services::{ServeDir, ServeFile};
 use tracing::{error, info, instrument};
+use derivative::Derivative;
 
 const CSS_STYLE: &str = r#"<style>
-  * {
+  .wiki-container * {
     margin: 0;
     padding: 0;
     box-sizing: border-box;
@@ -18,22 +19,34 @@ const CSS_STYLE: &str = r#"<style>
     font-size: 16px;
     line-height: 1.6;
     color: #37352f;
-    background: #ffffff;
-    max-width: 720px;
+    background: #f8f9fa;
+    min-height: 100vh;
+    margin: 0;
+    padding: 0;
+  }
+
+  .wiki-container {
+    max-width: 820px;
     margin: 0 auto;
-    padding: 40px 96px;
+    padding: 40px 60px;
+    background: #ffffff;
+    min-height: calc(100vh - 64px);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.05);
   }
 
   /* Headings */
-  h1 {
+  .wiki-container h1 {
     font-size: 2.5em;
     font-weight: 700;
     line-height: 1.2;
     margin: 0 0 16px 0;
     color: #37352f;
+    padding-top: 8px;
+    border-bottom: 1px solid #e9ecef;
+    padding-bottom: 12px;
   }
 
-  h2 {
+  .wiki-container h2 {
     font-size: 1.875em;
     font-weight: 600;
     line-height: 1.3;
@@ -41,7 +54,7 @@ const CSS_STYLE: &str = r#"<style>
     color: #37352f;
   }
 
-  h3 {
+  .wiki-container h3 {
     font-size: 1.5em;
     font-weight: 600;
     line-height: 1.3;
@@ -50,36 +63,37 @@ const CSS_STYLE: &str = r#"<style>
   }
 
   /* Paragraphs */
-  p {
+  .wiki-container p {
     margin: 0 0 12px 0;
     line-height: 1.6;
   }
 
   /* Links */
-  a {
+  .wiki-container a {
     color: #0066cc;
     text-decoration: none;
     border-bottom: 1px solid rgba(0, 102, 204, 0.3);
     transition: border-color 0.2s ease;
   }
 
-  a:hover {
+  .wiki-container a:hover {
     border-bottom-color: #0066cc;
   }
 
   /* Lists */
-  ul, ol {
+  .wiki-container ul, 
+  .wiki-container ol {
     margin: 0 0 12px 0;
     padding-left: 1.5em;
   }
 
-  li {
+  .wiki-container li {
     margin: 4px 0;
     line-height: 1.6;
   }
 
   /* Code */
-  code {
+  .wiki-container code {
     background: rgba(135, 131, 120, 0.15);
     color: #eb5757;
     padding: 0.2em 0.4em;
@@ -88,7 +102,7 @@ const CSS_STYLE: &str = r#"<style>
     font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
   }
 
-  pre {
+  .wiki-container pre {
     background: #f7f6f3;
     padding: 16px;
     border-radius: 3px;
@@ -96,7 +110,7 @@ const CSS_STYLE: &str = r#"<style>
     margin: 0 0 12px 0;
   }
 
-  pre code {
+  .wiki-container pre code {
     background: none;
     color: #37352f;
     padding: 0;
@@ -104,16 +118,31 @@ const CSS_STYLE: &str = r#"<style>
 
   /* Mobile responsiveness */
   @media (max-width: 768px) {
-    body {
+    .wiki-container {
       padding: 24px;
     }
   }
 </style>"#;
 
+const NAVBAR: &str = r#"
+<nav class="navbar bg-base-100 border-b border-base-300 px-6 sticky top-0 z-50 shadow-sm">
+  <div class="flex-1">
+      <a href="/" class="btn btn-ghost text-xl font-semibold">📚 Personal Wiki</a>
+  </div>
+  <div class="flex-none">
+      <ul class="menu menu-horizontal px-1 gap-2">
+          <li><a href="/" class="btn btn-ghost btn-sm">Home</a></li>
+          <li><a href="https://github.com/AstraBert/personal-wiki" target="_blank" class="btn btn-ghost btn-sm">GitHub</a></li>
+      </ul>
+  </div>
+</nav>
+<br>
+"#;
+
 fn style_html(html: &str, username: &str) -> String {
     format!(
-        "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"UTF-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n<title>{}'s Wiki</title>\n{}\n</head>\n<body>\n{}\n</body>\n</html>",
-        username, CSS_STYLE, html
+        "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"UTF-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n<title>{}'s Wiki</title>\n<script src=\"https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4\"></script>\n<link href=\"https://cdn.jsdelivr.net/npm/daisyui@5/dist/full.css\" rel=\"stylesheet\" type=\"text/css\" />\n{}\n</head>\n<body>\n{}\n<div class=\"flex flex-col px-6 py-12 items-center justify-center wiki-container\">\n{}\n</div>\n</body>\n</html>",
+        username, CSS_STYLE, NAVBAR, html
     )
 }
 
@@ -259,10 +288,12 @@ async fn delete_record(username: &str, password: &str) -> Option<String> {
   None
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Derivative)]
+#[derivative(Debug)]
 struct CreateOrUpdateWikiRequest {
     content: String,
     username: String,
+    #[derivative(Debug = "ignore")]
     password: String,
 }
 
@@ -283,9 +314,11 @@ impl CreateOrUpdateWikiResponse {
   }
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Derivative)]
+#[derivative(Debug)]
 struct DeleteWikiRequest {
   username: String,
+  #[derivative(Debug = "ignore")]
   password: String,
 }
 
