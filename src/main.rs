@@ -1,11 +1,16 @@
-use libsql::{Builder, params};
-use markdown::{to_html};
+use axum::{
+    extract::Path,
+    response::{Html, Json},
+    routing::{get, post},
+    Router,
+};
 use bcrypt::{hash, verify, DEFAULT_COST};
+use derivative::Derivative;
+use libsql::{params, Builder};
+use markdown::to_html;
 use serde::{Deserialize, Serialize};
-use axum::{Router, routing::{get, post},extract::Path, response::{Json,Html}};
 use tower_http::services::{ServeDir, ServeFile};
 use tracing::{error, info, instrument};
-use derivative::Derivative;
 
 const CSS_STYLE: &str = r#"<style>
   .wiki-container * {
@@ -147,32 +152,35 @@ fn style_html(html: &str, username: &str) -> String {
 }
 
 fn hash_pwd(password: &str) -> Result<String, bcrypt::BcryptError> {
-  hash(password, DEFAULT_COST)
+    hash(password, DEFAULT_COST)
 }
 
 fn verify_hashed_pwd(password: &str, hashed_password: &str) -> Result<bool, bcrypt::BcryptError> {
-  verify(password, hashed_password)
+    verify(password, hashed_password)
 }
 
 struct Wiki {
-  content: String,
-  password: String,
+    content: String,
+    password: String,
 }
 
 impl Wiki {
-  fn new(content: String, password: String) -> Self {
-    Self {
-      content: content,
-      password: password,
+    fn new(content: String, password: String) -> Self {
+        Self { content, password }
     }
-  }
 }
 
 async fn create_table() {
-    let url = std::env::var("LIBSQL_CONNECTION_STRING").expect("LIBSQL_CONNECTION_STRING should be set");
+    let url =
+        std::env::var("LIBSQL_CONNECTION_STRING").expect("LIBSQL_CONNECTION_STRING should be set");
     let token = std::env::var("LIBSQL_AUTH_TOKEN").expect("LIBSQL_AUTH_TOKEN should be set");
-    let db = Builder::new_remote(url, token).build().await.expect("It should be possible to connect to remote database");
-    let conn = db.connect().expect("It should be possible to connect to a local database");
+    let db = Builder::new_remote(url, token)
+        .build()
+        .await
+        .expect("It should be possible to connect to remote database");
+    let conn = db
+        .connect()
+        .expect("It should be possible to connect to a local database");
 
     // Create a table
     conn.execute(
@@ -182,40 +190,49 @@ async fn create_table() {
 }
 
 async fn get_record(username: &str) -> Option<Wiki> {
-    let url = std::env::var("LIBSQL_CONNECTION_STRING").expect("LIBSQL_CONNECTION_STRING should be set");
+    let url =
+        std::env::var("LIBSQL_CONNECTION_STRING").expect("LIBSQL_CONNECTION_STRING should be set");
     let token = std::env::var("LIBSQL_AUTH_TOKEN").expect("LIBSQL_AUTH_TOKEN should be set");
     let db = Builder::new_remote(url, token).build().await.ok()?;
     let conn = db.connect().ok()?;
 
-    let mut rows = conn.query("SELECT content, password FROM wikis WHERE user = ?", params![username]).await.ok()?;
+    let mut rows = conn
+        .query(
+            "SELECT content, password FROM wikis WHERE user = ?",
+            params![username],
+        )
+        .await
+        .ok()?;
 
     if let Some(row) = rows.next().await.ok()? {
         let content: String = row.get(0).ok()?;
         let pwd: String = row.get(1).ok()?;
         return Some(Wiki::new(content, pwd));
     }
-    
+
     None
 }
 async fn insert_record(markdown_text: &str, username: &str, password: &str) -> Option<String> {
     create_table().await;
-    let url = std::env::var("LIBSQL_CONNECTION_STRING").expect("LIBSQL_CONNECTION_STRING should be set");
+    let url =
+        std::env::var("LIBSQL_CONNECTION_STRING").expect("LIBSQL_CONNECTION_STRING should be set");
     let token = std::env::var("LIBSQL_AUTH_TOKEN").expect("LIBSQL_AUTH_TOKEN should be set");
     let db = Builder::new_remote(url, token).build().await.ok()?;
     let conn = db.connect().ok()?;
     let html_text = to_html(markdown_text);
-    if html_text != markdown_text { // conversion happened correctly
+    if html_text != markdown_text {
+        // conversion happened correctly
         let user_exists = get_record(username).await;
         match user_exists {
-            Some(_) => {
-                return Some("User already exists".to_string())
-            }
+            Some(_) => return Some("User already exists".to_string()),
             None => {
                 conn.execute(
-                    "INSERT INTO wikis (user, content, password) VALUES (?1, ?2, ?3)", 
-                    [username, &html_text, password]
-                ).await.ok()?;
-                return None
+                    "INSERT INTO wikis (user, content, password) VALUES (?1, ?2, ?3)",
+                    [username, &html_text, password],
+                )
+                .await
+                .ok()?;
+                return None;
             }
         }
     }
@@ -223,69 +240,70 @@ async fn insert_record(markdown_text: &str, username: &str, password: &str) -> O
 }
 async fn update_record(markdown_text: &str, username: &str, password: &str) -> Option<String> {
     create_table().await;
-    let url = std::env::var("LIBSQL_CONNECTION_STRING").expect("LIBSQL_CONNECTION_STRING should be set");
+    let url =
+        std::env::var("LIBSQL_CONNECTION_STRING").expect("LIBSQL_CONNECTION_STRING should be set");
     let token = std::env::var("LIBSQL_AUTH_TOKEN").expect("LIBSQL_AUTH_TOKEN should be set");
     let db = Builder::new_remote(url, token).build().await.ok()?;
     let conn = db.connect().ok()?;
     let html_text = to_html(markdown_text);
-    if html_text != markdown_text { // conversion happened correctly
+    if html_text != markdown_text {
+        // conversion happened correctly
         let user_exists = get_record(username).await;
         match user_exists {
             Some(r) => {
                 let verification = verify_hashed_pwd(password, &r.password);
                 match verification {
                     Ok(pwd_match) => {
-                      if pwd_match {
-                        conn.execute(
-                            "UPDATE wikis SET content = ?1 WHERE user = ?2", 
-                            [&html_text, username]
-                        ).await.ok()?;
-                        return None
-                      } else {
-                        return Some("Wrong username or password".to_string());
-                      }
-                    } 
+                        if pwd_match {
+                            conn.execute(
+                                "UPDATE wikis SET content = ?1 WHERE user = ?2",
+                                [&html_text, username],
+                            )
+                            .await
+                            .ok()?;
+                            return None;
+                        } else {
+                            return Some("Wrong username or password".to_string());
+                        }
+                    }
                     Err(e) => {
-                      return Some(e.to_string());
+                        return Some(e.to_string());
                     }
                 }
             }
-            None => {
-                return Some("User does not exists".to_string())
-            }
+            None => return Some("User does not exists".to_string()),
         }
     }
     Some("Could not convert markdown text to HTML".to_string())
 }
 
 async fn delete_record(username: &str, password: &str) -> Option<String> {
-  create_table().await;
-  let url = std::env::var("LIBSQL_CONNECTION_STRING").expect("LIBSQL_CONNECTION_STRING should be set");
-  let token = std::env::var("LIBSQL_AUTH_TOKEN").expect("LIBSQL_AUTH_TOKEN should be set");
-  let db = Builder::new_remote(url, token).build().await.ok()?;
-  let conn = db.connect().ok()?;
-  let user_exists = get_record(username).await;
-  match user_exists {
-    Some(r) => {
-      let verification = verify_hashed_pwd(password, &r.password);
-      match verification {
-        Ok(pwd_match) => {
-          if pwd_match {
-            conn.execute("DELETE FROM wikis WHERE user = ?", params![username]).await.ok()?;
-          } else {
-            return Some("Wrong username or password".to_string())
-          }
+    create_table().await;
+    let url =
+        std::env::var("LIBSQL_CONNECTION_STRING").expect("LIBSQL_CONNECTION_STRING should be set");
+    let token = std::env::var("LIBSQL_AUTH_TOKEN").expect("LIBSQL_AUTH_TOKEN should be set");
+    let db = Builder::new_remote(url, token).build().await.ok()?;
+    let conn = db.connect().ok()?;
+    let user_exists = get_record(username).await;
+    match user_exists {
+        Some(r) => {
+            let verification = verify_hashed_pwd(password, &r.password);
+            match verification {
+                Ok(pwd_match) => {
+                    if pwd_match {
+                        conn.execute("DELETE FROM wikis WHERE user = ?", params![username])
+                            .await
+                            .ok()?;
+                    } else {
+                        return Some("Wrong username or password".to_string());
+                    }
+                }
+                Err(e) => return Some(e.to_string()),
+            }
         }
-        Err(e) => {
-          return Some(e.to_string())
-        }
-      }
+        None => return Some("User does not exist".to_string()),
     }
-    None => {
-      return Some("User does not exist".to_string())
-    }
-  }
-  None
+    None
 }
 
 #[derive(Deserialize, Derivative)]
@@ -301,62 +319,88 @@ struct CreateOrUpdateWikiRequest {
 struct CreateOrUpdateWikiResponse {
     success: bool,
     error: Option<String>,
-    url: Option<String>
+    url: Option<String>,
 }
 
 impl CreateOrUpdateWikiResponse {
-  fn new(success: bool, error: Option<String>, url: Option<String>) -> Self {
-    Self {
-      success: success,
-      error: error,
-      url: url
+    fn new(success: bool, error: Option<String>, url: Option<String>) -> Self {
+        Self {
+            success,
+            error,
+            url,
+        }
     }
-  }
 }
 
 #[derive(Deserialize, Derivative)]
 #[derivative(Debug)]
 struct DeleteWikiRequest {
-  username: String,
-  #[derivative(Debug = "ignore")]
-  password: String,
+    username: String,
+    #[derivative(Debug = "ignore")]
+    password: String,
 }
 
 #[derive(Serialize, Debug)]
 struct DeleteWikiResponse {
-  success: bool,
-  error: Option<String>,
+    success: bool,
+    error: Option<String>,
 }
 
 #[instrument]
-async fn create_wiki(Json(payload): Json<CreateOrUpdateWikiRequest>) -> Json<CreateOrUpdateWikiResponse> {
+async fn create_wiki(
+    Json(payload): Json<CreateOrUpdateWikiRequest>,
+) -> Json<CreateOrUpdateWikiResponse> {
     let hashed_psw = hash_pwd(&payload.password);
     let password: String;
     match hashed_psw {
         Ok(s) => {
-          password = s;
+            password = s;
         }
         Err(e) => {
-          error!(event = "CreateWiki", data_id = %payload.username, "{}", e.to_string());
-          return Json(CreateOrUpdateWikiResponse::new(false, Some(e.to_string()), None))
+            error!(event = "CreateWiki", data_id = %payload.username, "{}", e.to_string());
+            return Json(CreateOrUpdateWikiResponse::new(
+                false,
+                Some(e.to_string()),
+                None,
+            ));
         }
     }
     if let Some(error_msg) = insert_record(&payload.content, &payload.username, &password).await {
         error!(event = "CreateWiki", data_id = %payload.username, "{}", error_msg);
-        return Json(CreateOrUpdateWikiResponse::new(false, Some(error_msg), None))
+        return Json(CreateOrUpdateWikiResponse::new(
+            false,
+            Some(error_msg),
+            None,
+        ));
     }
     info!(event = "CreateWiki", data_id = %payload.username, "Wiki successfully created");
-    Json(CreateOrUpdateWikiResponse::new(true, None, Some(format!("/wikis/{}", &payload.username))))
+    Json(CreateOrUpdateWikiResponse::new(
+        true,
+        None,
+        Some(format!("/wikis/{}", &payload.username)),
+    ))
 }
 
 #[instrument]
-async fn update_wiki(Json(payload): Json<CreateOrUpdateWikiRequest>) -> Json<CreateOrUpdateWikiResponse> {
-    if let Some(error_msg) = update_record(&payload.content, &payload.username, &payload.password).await {
+async fn update_wiki(
+    Json(payload): Json<CreateOrUpdateWikiRequest>,
+) -> Json<CreateOrUpdateWikiResponse> {
+    if let Some(error_msg) =
+        update_record(&payload.content, &payload.username, &payload.password).await
+    {
         error!(event = "UpdateWiki", data_id = %payload.username, "{}", error_msg);
-        return Json(CreateOrUpdateWikiResponse::new(false, Some(error_msg), None))
+        return Json(CreateOrUpdateWikiResponse::new(
+            false,
+            Some(error_msg),
+            None,
+        ));
     }
     info!(event = "UpdateWiki", data_id = %payload.username, "Wiki successfully updated");
-    Json(CreateOrUpdateWikiResponse::new(true, None, Some(format!("/wikis/{}", &payload.username))))
+    Json(CreateOrUpdateWikiResponse::new(
+        true,
+        None,
+        Some(format!("/wikis/{}", &payload.username)),
+    ))
 }
 
 #[instrument]
@@ -365,42 +409,163 @@ async fn get_wiki(Path(username): Path<String>) -> Html<String> {
         Some(content) => {
             let styled_content = style_html(&content.content, &username);
             info!(event = "GetWiki", data_id = %username, "Wiki successfully retrieved");
-            return Html(styled_content)
+            return Html(styled_content);
         }
-        ,
         None => {
-          error!(event = "GetWiki", data_id = %username, "Wiki not found for user {}", username);
-          return Html(format!("Wiki for user {} not found... Please create one and try again!", &username))
+            error!(event = "GetWiki", data_id = %username, "Wiki not found for user {}", username);
+            return Html(format!(
+                "Wiki for user {} not found... Please create one and try again!",
+                &username
+            ));
         }
     }
 }
 
 #[instrument]
 async fn delete_wiki(Json(payload): Json<DeleteWikiRequest>) -> Json<DeleteWikiResponse> {
-  match delete_record(&payload.username, &payload.password).await {
-      Some(s) => {
-        error!(event = "DeleteWiki", data_id = %payload.username, "{}", s);
-        return Json(DeleteWikiResponse { success: false, error: Some(s) })
-      }
-      None => {
-        info!(event = "DeleteWiki", data_id = %payload.username, "Wiki successfully deleted");
-        return Json(DeleteWikiResponse { success: true, error: None })
-      }
-  }
+    match delete_record(&payload.username, &payload.password).await {
+        Some(s) => {
+            error!(event = "DeleteWiki", data_id = %payload.username, "{}", s);
+            return Json(DeleteWikiResponse {
+                success: false,
+                error: Some(s),
+            });
+        }
+        None => {
+            info!(event = "DeleteWiki", data_id = %payload.username, "Wiki successfully deleted");
+            return Json(DeleteWikiResponse {
+                success: true,
+                error: None,
+            });
+        }
+    }
 }
 
 #[tokio::main]
 async fn main() {
-  tracing_subscriber::fmt().pretty().init();
-  let index_html = ServeFile::new("./pages/index.html");
-  let scripts = ServeDir::new("./scripts/");
-  let app = Router::new()
-    .route("/wikis", post(create_wiki).patch(update_wiki).delete(delete_wiki))
-    .route("/wikis/{username}", get(get_wiki))
-    .nest_service("/scripts", scripts)
-    .route_service("/", index_html);
-  let address = "0.0.0.0:3000";
-  let listener = tokio::net::TcpListener::bind(address).await.unwrap();
-  println!("Starting to serving application on {}", address);
-  axum::serve(listener, app).await.unwrap();
+    tracing_subscriber::fmt().pretty().init();
+    let index_html = ServeFile::new("./pages/index.html");
+    let scripts = ServeDir::new("./scripts/");
+    let app = Router::new()
+        .route(
+            "/wikis",
+            post(create_wiki).patch(update_wiki).delete(delete_wiki),
+        )
+        .route("/wikis/{username}", get(get_wiki))
+        .nest_service("/scripts", scripts)
+        .route_service("/", index_html);
+    let address = "0.0.0.0:3000";
+    let listener = tokio::net::TcpListener::bind(address).await.unwrap();
+    println!("Starting to serving application on {}", address);
+    axum::serve(listener, app).await.unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_style_html() {
+        let html_text = "<h1>Hello</h1>";
+        let styled_html = style_html(html_text, "TestUser");
+        assert_eq!(format!(
+        "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"UTF-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n<title>{}'s Wiki</title>\n<script src=\"https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4\"></script>\n<link href=\"https://cdn.jsdelivr.net/npm/daisyui@5/dist/full.css\" rel=\"stylesheet\" type=\"text/css\" />\n{}\n</head>\n<body>\n{}\n<div class=\"flex flex-col px-6 py-12 items-center justify-center wiki-container\">\n{}\n</div>\n</body>\n</html>",
+        "TestUser", CSS_STYLE, NAVBAR, html_text
+    ), styled_html);
+    }
+
+    #[test]
+    fn test_hash_password() {
+        let password = "test_password";
+        let hashed_or_error = hash_pwd(password);
+        match hashed_or_error {
+            Ok(s) => {
+                let verification = verify_hashed_pwd(password, &s);
+                match verification {
+                    Ok(is_match) => {
+                        assert!(is_match);
+                    }
+                    Err(e) => {
+                        eprintln!("An error occurred: {}", e.to_string());
+                        assert!(false);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("An error occurred: {}", e.to_string());
+                assert!(false);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_crud_operations() {
+        if std::env::var("LIBSQL_CONNECTION_STRING").is_err()
+            || std::env::var("LIBSQL_AUTH_TOKEN").is_err()
+        {
+            eprintln!("Skipping test because the necessary env variables are not set");
+            return;
+        } else {
+            let password = "test_password";
+            let hashed_or_error = hash_pwd(password);
+            let hashed: String;
+            match hashed_or_error {
+                Ok(s) => {
+                    hashed = s;
+                }
+                Err(e) => {
+                    eprintln!("An error occurred: {}", e.to_string());
+                    return;
+                }
+            }
+            // create record
+            let retval = insert_record("# hello", "test_user", &hashed).await;
+            match retval {
+                Some(s) => {
+                    eprintln!("An error occurred while inserting the record: {}", s);
+                    assert!(false);
+                }
+                None => {}
+            }
+            // get the record that has just been uploaded
+            let record = get_record("test_user").await;
+            match record {
+                Some(w) => {
+                    assert_eq!(w.content, "<h1>hello</h1>");
+                    assert_eq!(hashed, w.password);
+                }
+                None => {
+                    eprintln!("No row returned even if record should be present");
+                    assert!(false);
+                }
+            }
+            // update the record to a new one
+            let updatedval = update_record("# hi!", "test_user", "test_password").await;
+            match updatedval {
+                Some(s) => {
+                    eprintln!("An error occurred while updating the record: {}", s);
+                }
+                None => {}
+            }
+            let updated_record = get_record("test_user").await;
+            match updated_record {
+                Some(w) => {
+                    assert_eq!(w.content, "<h1>hi!</h1>");
+                    assert_eq!(hashed, w.password);
+                }
+                None => {
+                    eprintln!("No row returned even if record should be present");
+                    assert!(false);
+                }
+            }
+            // delete record
+            let delval = delete_record("test_user", "test_password").await;
+            match delval {
+                Some(s) => {
+                    eprintln!("An error occurred while deleting the record: {}", s);
+                }
+                None => {}
+            }
+        }
+    }
 }
