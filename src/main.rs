@@ -404,3 +404,111 @@ async fn main() {
   println!("Starting to serving application on {}", address);
   axum::serve(listener, app).await.unwrap();
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn test_style_html() {
+    let html_text = "<h1>Hello</h1>";
+    let styled_html = style_html(html_text, "TestUser");
+    assert_eq!(format!(
+        "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"UTF-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n<title>{}'s Wiki</title>\n<script src=\"https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4\"></script>\n<link href=\"https://cdn.jsdelivr.net/npm/daisyui@5/dist/full.css\" rel=\"stylesheet\" type=\"text/css\" />\n{}\n</head>\n<body>\n{}\n<div class=\"flex flex-col px-6 py-12 items-center justify-center wiki-container\">\n{}\n</div>\n</body>\n</html>",
+        "TestUser", CSS_STYLE, NAVBAR, html_text
+    ), styled_html);
+  }
+
+  #[test]
+  fn test_hash_password() {
+    let password = "test_password";
+    let hashed_or_error = hash_pwd(password);
+    match hashed_or_error {
+      Ok(s) => {
+        let verification = verify_hashed_pwd(password, &s);
+        match verification {
+          Ok(is_match) => {
+            assert!(is_match);
+          }
+          Err(e) => {
+            eprintln!("An error occurred: {}", e.to_string());
+            assert!(false);
+          }
+        }
+      }
+      Err(e) => {
+        eprintln!("An error occurred: {}", e.to_string());
+        assert!(false);
+      }
+    }
+  }
+
+  #[tokio::test]
+  async fn test_crud_operations() {
+    if std::env::var("LIBSQL_CONNECTION_STRING").is_err() || std::env::var("LIBSQL_AUTH_TOKEN").is_err() {
+        eprintln!("Skipping test because the necessary env variables are not set");
+        return;
+    } else {
+      let password = "test_password";
+      let hashed_or_error = hash_pwd(password);
+      let hashed: String;
+      match hashed_or_error {
+        Ok(s) => {
+          hashed = s;
+        }
+        Err(e) => {
+          eprintln!("An error occurred: {}", e.to_string());
+          return;
+        }
+    }
+      // create record
+      let retval = insert_record("# hello", "test_user", &hashed).await;
+      match retval {
+        Some(s) => {
+          eprintln!("An error occurred while inserting the record: {}", s);
+          assert!(false);
+        }
+        None => {} 
+      }
+      // get the record that has just been uploaded
+      let record = get_record("test_user").await;
+      match record {
+        Some(w) => {
+          assert_eq!(w.content, "<h1>hello</h1>");
+          assert_eq!(hashed, w.password);
+        }
+        None => {
+          eprintln!("No row returned even if record should be present");
+          assert!(false);
+        }
+      }
+      // update the record to a new one
+      let updatedval = update_record("# hi!", "test_user", "test_password").await;
+      match updatedval {
+        Some(s) => {
+          eprintln!("An error occurred while updating the record: {}", s);
+        }
+        None => {}
+      }
+      let updated_record = get_record("test_user").await;
+      match updated_record {
+        Some(w) => {
+          assert_eq!(w.content, "<h1>hi!</h1>");
+          assert_eq!(hashed, w.password);
+        }
+        None => {
+          eprintln!("No row returned even if record should be present");
+          assert!(false);
+        }
+      }
+      // delete record
+      let delval = delete_record("test_user", "test_password").await;
+      match delval {
+        Some(s) => {
+          eprintln!("An error occurred while deleting the record: {}", s);
+        }
+        None => {}
+      }
+    }
+  }
+}
