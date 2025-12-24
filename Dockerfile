@@ -8,6 +8,12 @@ RUN cargo build --release
 #stage 2
 FROM debian:bookworm-slim
 WORKDIR /app
+
+# Install CA certificates
+RUN apt-get update && \
+    apt-get install -y ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
 COPY --from=builder /app/target/release/personal-wiki .
 COPY --from=builder /app/pages/index.html /app/pages/index.html
 COPY --from=builder /app/scripts/script.js /app/scripts/script.js
