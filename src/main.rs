@@ -356,11 +356,8 @@ async fn create_wiki(
     Json(payload): Json<CreateOrUpdateWikiRequest>,
 ) -> Json<CreateOrUpdateWikiResponse> {
     let hashed_psw = hash_pwd(&payload.password);
-    let password: String;
-    match hashed_psw {
-        Ok(s) => {
-            password = s;
-        }
+    let password: String = match hashed_psw {
+        Ok(s) => s,
         Err(e) => {
             error!(event = "CreateWiki", data_id = %payload.username, "{}", e.to_string());
             return Json(CreateOrUpdateWikiResponse::new(
@@ -369,7 +366,7 @@ async fn create_wiki(
                 None,
             ));
         }
-    }
+    };
     if let Some(error_msg) = insert_record(&payload.content, &payload.username, &password).await {
         error!(event = "CreateWiki", data_id = %payload.username, "{}", error_msg);
         return Json(CreateOrUpdateWikiResponse::new(
