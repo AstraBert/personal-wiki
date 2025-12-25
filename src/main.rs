@@ -1,3 +1,5 @@
+use axum::http::header::CONTENT_TYPE;
+use axum::http::method::Method;
 use axum::{
     extract::Path,
     response::{Html, Json},
@@ -6,15 +8,13 @@ use axum::{
 };
 use bcrypt::{hash, verify, DEFAULT_COST};
 use derivative::Derivative;
+use http::HeaderValue;
 use libsql::{params, Builder};
 use markdown::to_html;
 use serde::{Deserialize, Serialize};
-use tower_http::services::{ServeDir, ServeFile};
-use http::HeaderValue;
-use axum::http::header::CONTENT_TYPE;
-use axum::http::method::Method;
-use tower_http::cors::{CorsLayer};
 use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
+use tower_http::cors::CorsLayer;
+use tower_http::services::{ServeDir, ServeFile};
 use tracing::{error, info, instrument};
 
 const CSS_STYLE: &str = r#"<style>
@@ -454,18 +454,27 @@ async fn main() {
     let index_html = ServeFile::new("./pages/index.html");
     let about_html = ServeFile::new("./pages/about.html");
     let scripts = ServeDir::new("./scripts/");
-    
+
     // middleware layers
     let cors_layer = CorsLayer::new()
-    .allow_origin("https://personalwiki.com.de".parse::<HeaderValue>().expect("Should be able to parse URL into a header value."))
-    .allow_methods(vec![Method::POST, Method::GET, Method::PATCH, Method::DELETE])
-    .allow_headers(vec![CONTENT_TYPE]);
+        .allow_origin(
+            "https://personalwiki.com.de"
+                .parse::<HeaderValue>()
+                .expect("Should be able to parse URL into a header value."),
+        )
+        .allow_methods(vec![
+            Method::POST,
+            Method::GET,
+            Method::PATCH,
+            Method::DELETE,
+        ])
+        .allow_headers(vec![CONTENT_TYPE]);
     let governor_conf = Box::new(
         GovernorConfigBuilder::default()
             .per_second(60)
             .burst_size(10)
             .finish()
-            .expect("Should be able to create a tower-governor config.")
+            .expect("Should be able to create a tower-governor config."),
     );
     let governor_layer = GovernorLayer::new(governor_conf);
 
@@ -488,7 +497,7 @@ async fn main() {
 
     // comhine in one router
     let app = protected_routes.merge(public_routes);
-    
+
     // start router
     let address = "0.0.0.0:3000";
     let listener = tokio::net::TcpListener::bind(address).await.unwrap();
