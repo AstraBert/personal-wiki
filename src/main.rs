@@ -10,6 +10,11 @@ use libsql::{params, Builder};
 use markdown::to_html;
 use serde::{Deserialize, Serialize};
 use tower_http::services::{ServeDir, ServeFile};
+use http::HeaderValue;
+use axum::http::header::CONTENT_TYPE;
+use axum::http::method::Method;
+use tower_http::cors::{CorsLayer};
+use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
 use tracing::{error, info, instrument};
 
 const CSS_STYLE: &str = r#"<style>
@@ -444,19 +449,50 @@ async fn delete_wiki(Json(payload): Json<DeleteWikiRequest>) -> Json<DeleteWikiR
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt().pretty().init();
+
+    // static assets
     let index_html = ServeFile::new("./pages/index.html");
+    let about_html = ServeFile::new("./pages/about.html");
     let scripts = ServeDir::new("./scripts/");
-    let app = Router::new()
+    
+    // middleware layers
+    let cors_layer = CorsLayer::new()
+    .allow_origin("https://personalwiki.com.de".parse::<HeaderValue>().expect("Should be able to parse URL into a header value."))
+    .allow_methods(vec![Method::POST, Method::GET, Method::PATCH, Method::DELETE])
+    .allow_headers(vec![CONTENT_TYPE]);
+    let governor_conf = Box::new(
+        GovernorConfigBuilder::default()
+            .per_second(60)
+            .burst_size(10)
+            .finish()
+            .expect("Should be able to create a tower-governor config.")
+    );
+    let governor_layer = GovernorLayer::new(governor_conf);
+
+    // router
+    // protected routes (rate limits and CORS)
+    let protected_routes = Router::new()
         .route(
             "/wikis",
             post(create_wiki).patch(update_wiki).delete(delete_wiki),
         )
+        .layer(governor_layer)
+        .layer(cors_layer);
+
+    // public routes
+    let public_routes = Router::new()
         .route("/wikis/{username}", get(get_wiki))
         .nest_service("/scripts", scripts)
-        .route_service("/", index_html);
+        .route_service("/", index_html)
+        .route_service("/about", about_html);
+
+    // comhine in one router
+    let app = protected_routes.merge(public_routes);
+    
+    // start router
     let address = "0.0.0.0:3000";
     let listener = tokio::net::TcpListener::bind(address).await.unwrap();
-    println!("Starting to serving application on {}", address);
+    println!("Application started on {}...", address);
     axum::serve(listener, app).await.unwrap();
 }
 
