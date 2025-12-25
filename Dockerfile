@@ -16,6 +16,7 @@ RUN apt-get update && \
 
 COPY --from=builder /app/target/release/personal-wiki .
 COPY --from=builder /app/pages/index.html /app/pages/index.html
+COPY --from=builder /app/pages/about.html /app/pages/about.html
 COPY --from=builder /app/scripts/script.js /app/scripts/script.js
 EXPOSE 3000
 CMD ["./personal-wiki"]
