@@ -12,6 +12,8 @@ use http::HeaderValue;
 use libsql::{params, Builder};
 use markdown::to_html;
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
+use std::time::Duration;
 use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
 use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
@@ -473,6 +475,15 @@ async fn main() {
             .finish()
             .expect("Should be able to create a tower-governor config."),
     );
+    let governor_limiter = governor_conf.limiter().clone();
+    let interval = Duration::from_secs(60);
+    // a separate background task to clean up
+    std::thread::spawn(move || loop {
+        std::thread::sleep(interval);
+        tracing::info!("rate limiting storage size: {}", governor_limiter.len());
+        governor_limiter.retain_recent();
+    });
+
     let governor_layer = GovernorLayer::new(governor_conf);
 
     // router
@@ -496,10 +507,15 @@ async fn main() {
     let app = protected_routes.merge(public_routes);
 
     // start router
-    let address = "0.0.0.0:3000";
-    let listener = tokio::net::TcpListener::bind(address).await.unwrap();
-    println!("Application started on {}...", address);
-    axum::serve(listener, app).await.unwrap();
+    let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
+    tracing::info!("listening on {}", addr);
+    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .unwrap();
 }
 
 #[cfg(test)]
