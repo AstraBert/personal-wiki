@@ -480,7 +480,9 @@ async fn main() {
     // a separate background task to clean up
     std::thread::spawn(move || loop {
         std::thread::sleep(interval);
-        tracing::info!("rate limiting storage size: {}", governor_limiter.len());
+        if !governor_limiter.is_empty() {
+            tracing::info!("rate limiting storage size: {}", governor_limiter.len());
+        }
         governor_limiter.retain_recent();
     });
 
